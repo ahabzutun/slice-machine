@@ -16,6 +16,16 @@ output/*.slc
 # Keep the directory structure
 !output/.gitkeep
 
+# Audio files in input (user test files)
+input/*.wav
+input/*.mp3
+input/*.flac
+input/*.aif
+input/*.aiff
+
+# CDP thread files (user-created)
+*.thd
+
 # Test files
 TEST_*.wav
 TEST_*.slc
