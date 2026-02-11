@@ -525,24 +525,24 @@ def remove_silent_slices(audio, slices, sr, silence_threshold_db=-60):
 def filter_slices_by_duration(slices, min_duration_ms, sr=48000):
     """
     Filter out slices shorter than minimum duration
-    
+
     Args:
         slices: List of slice dictionaries
         min_duration_ms: Minimum duration in milliseconds
         sr: Sample rate
-    
+
     Returns:
         Filtered list of slices meeting minimum duration
     """
     min_samples = int((min_duration_ms / 1000) * sr)
-    
+
     print(f"\n⏱️  Filtering by minimum duration...")
     print(f"   Minimum: {min_duration_ms}ms ({min_samples:,} samples)")
     print(f"   Checking {len(slices)} slices...")
-    
+
     filtered_slices = []
     rejected_count = 0
-    
+
     for s in slices:
         if s['length'] >= min_samples:
             filtered_slices.append(s)
@@ -551,10 +551,10 @@ def filter_slices_by_duration(slices, min_duration_ms, sr=48000):
             # Debug: show first few rejected slices
             if rejected_count <= 3:
                 print(f"   Rejecting slice {s['index']}: {s['duration_ms']:.1f}ms (too short)")
-    
+
     print(f"✓ Removed {rejected_count} slices below minimum duration")
     print(f"✓ Kept {len(filtered_slices)} slices")
-    
+
     return filtered_slices
 
 def force_target_slices(slices, target_slices, audio_length, sr=48000, min_duration_ms=None):
@@ -569,7 +569,7 @@ def force_target_slices(slices, target_slices, audio_length, sr=48000, min_durat
     print(f"\n✂️  Subdividing to reach target of {target_slices} slices...")
     print(f"   Current: {current_count} slices")
     print(f"   Need to add: {target_slices - current_count} more slices")
-    
+
     if min_duration_ms:
         min_samples = int((min_duration_ms / 1000) * sr)
         print(f"   Respecting minimum duration: {min_duration_ms}ms ({min_samples:,} samples)")
@@ -584,15 +584,15 @@ def force_target_slices(slices, target_slices, audio_length, sr=48000, min_durat
     # Keep subdividing longest slices until we reach target
     while len(working_slices) < target_slices:
         # Find longest slice that can still be subdivided
-        subdividable = [i for i, s in enumerate(working_slices) 
+        subdividable = [i for i, s in enumerate(working_slices)
                        if s['length'] >= min_samples * 2]
-        
+
         if not subdividable:
             print(f"\n⚠️  Cannot subdivide further without violating minimum duration!")
             print(f"   Reached {len(working_slices)} slices (target was {target_slices})")
             print(f"   All remaining slices are at or below 2x minimum ({min_duration_ms * 2}ms)")
             break
-        
+
         # Find longest subdividable slice
         longest_idx = max(subdividable, key=lambda i: working_slices[i]['length'])
         longest = working_slices[longest_idx]
@@ -691,6 +691,106 @@ def reorganize_slices_by_similarity(audio, slices, sr, direction='low_to_high'):
         print(f"   Order is now: HIGH frequency → LOW frequency")
 
     return reorganized_slices
+
+def organize_slices_by_banks(audio_files_data, bank_sort='chronological'):
+    """
+    Organize slices into 8 banks of 16 slices each (for 128 total)
+    Perfect for MIDI controllers with 8 banks × 16 pads
+
+    Args:
+        audio_files_data: List of dicts with 'audio', 'slices', 'sr', 'filename'
+        bank_sort: 'chronological', 'pitch_ascending', or 'pitch_descending'
+
+    Returns:
+        Flat list of 128 slices organized in banks
+    """
+    print(f"\n🏦 Organizing into 8 banks of 16 slices...")
+    print(f"   Bank sorting: {bank_sort.upper()}")
+
+    if len(audio_files_data) != 8:
+        raise ValueError(f"Bank mode requires exactly 8 files, got {len(audio_files_data)}")
+
+    organized_slices = []
+
+    for bank_num, file_data in enumerate(audio_files_data):
+        audio = file_data['audio']
+        slices = file_data['slices']
+        sr = file_data['sr']
+        filename = file_data['filename']
+
+        print(f"\n   Bank {bank_num + 1}: {filename}")
+        print(f"   Raw slices: {len(slices)}")
+
+        # Get exactly 16 slices from this file
+        if len(slices) > 16:
+            # Sample evenly across available slices
+            step = len(slices) / 16
+            indices = [int(i * step) for i in range(16)]
+            bank_slices = [slices[i] for i in indices]
+        elif len(slices) < 16:
+            # Duplicate to reach 16
+            while len(slices) < 16:
+                slices.append(slices[-1])
+            bank_slices = slices[:16]
+        else:
+            bank_slices = slices[:16]
+
+        # Sort this bank if requested
+        if bank_sort in ['pitch_ascending', 'pitch_descending']:
+            print(f"      Analyzing pitch for sorting...")
+
+            # Extract pitch for each slice
+            pitches = []
+            for s in bank_slices:
+                audio_segment = audio[s['start']:s['end']]
+
+                # Use librosa's pitch detection
+                try:
+                    # Get fundamental frequency estimate
+                    f0 = librosa.yin(audio_segment, fmin=librosa.note_to_hz('C1'),
+                                    fmax=librosa.note_to_hz('C8'), sr=sr)
+                    # Use median pitch (ignore zeros from unvoiced frames)
+                    voiced_f0 = f0[f0 > 0]
+                    if len(voiced_f0) > 0:
+                        median_pitch = np.median(voiced_f0)
+                    else:
+                        # Fallback to spectral centroid if no pitch detected
+                        median_pitch = np.mean(librosa.feature.spectral_centroid(y=audio_segment, sr=sr))
+                except:
+                    # Fallback to spectral centroid on error
+                    median_pitch = np.mean(librosa.feature.spectral_centroid(y=audio_segment, sr=sr))
+
+                pitches.append(median_pitch)
+
+            # Sort by pitch
+            pitch_order = np.argsort(pitches)
+
+            if bank_sort == 'pitch_descending':
+                pitch_order = pitch_order[::-1]
+
+            bank_slices = [bank_slices[i] for i in pitch_order]
+
+            pitch_range_text = f"{min(pitches):.0f}Hz - {max(pitches):.0f}Hz"
+            direction_text = "Low→High" if bank_sort == 'pitch_ascending' else "High→Low"
+            print(f"      Sorted by pitch: {direction_text} ({pitch_range_text})")
+
+        else:
+            print(f"      Keeping chronological order")
+
+        # Add to organized list
+        organized_slices.extend(bank_slices)
+
+    # Reindex
+    for i, s in enumerate(organized_slices):
+        s['index'] = i
+
+    print(f"\n✓ Organized into 8 banks × 16 slices = {len(organized_slices)} total")
+    print(f"   Bank 1: Slices 0-15   | Bank 5: Slices 64-79")
+    print(f"   Bank 2: Slices 16-31  | Bank 6: Slices 80-95")
+    print(f"   Bank 3: Slices 32-47  | Bank 7: Slices 96-111")
+    print(f"   Bank 4: Slices 48-63  | Bank 8: Slices 112-127")
+
+    return organized_slices
 
 def export_slices_custom(audio, slices, output_path, sr, generate_slc=True, reorganize=True, spectral_direction='low_to_high'):
     """
@@ -916,7 +1016,7 @@ def main():
     print("-" * 70)
     detection_choice = get_user_choice("Method:", ["energy", "percussive"], default=1)
     detection_method = 'energy' if detection_choice == 1 else 'percussive'
-    
+
     # Step 3a: Slice Length Mode (NEW!)
     print("\n⏱️  Step 3a: Slice Length Mode")
     print("-" * 70)
@@ -929,12 +1029,12 @@ def main():
         print(f"     {config['description']}")
         print(f"     Min: {config['min_duration_ms']}ms | Target: {config['target_duration_ms']}ms")
         print("")
-    
+
     slice_mode_choice = get_user_choice("Select slice length mode:", mode_options, default=1)
     slice_mode_keys = list(SLICE_MODES.keys())
     slice_mode = slice_mode_keys[slice_mode_choice - 1]
     slice_config = SLICE_MODES[slice_mode]
-    
+
     print(f"\n✓ Selected: {slice_mode.upper()}")
     print(f"   Minimum duration: {slice_config['min_duration_ms']}ms")
     print(f"   Target duration: {slice_config['target_duration_ms']}ms")
@@ -1016,12 +1116,51 @@ def main():
     # Step 4: Slice Organization
     print("\n🔀 Step 4: Slice Organization")
     print("-" * 70)
-    print("Choose how to organize slices in the final chain:")
-    reorg_choice = get_user_choice("Organization:", [
-        "sequential - Keep slices in original order (chronological)",
-        "similarity - Reorganize by frequency characteristics (recommended)"
-    ], default=2)
-    reorganize = (reorg_choice == 2)
+
+    # Check if bank mode is possible
+    bank_mode_available = (len(selected_files) == 8 and processing_mode == 'combine')
+
+    if bank_mode_available:
+        print("Choose how to organize slices in the final chain:")
+        org_options = [
+            "sequential - Keep slices in original order (chronological)",
+            "similarity - Reorganize by frequency characteristics",
+            "bank - 8 banks × 16 slices (perfect for MIDI controllers!) ✨"
+        ]
+        reorg_choice = get_user_choice("Organization:", org_options, default=3)
+
+        if reorg_choice == 3:
+            # Bank mode selected
+            reorganize = False  # Will use custom bank organization instead
+            use_bank_mode = True
+
+            print("\n🏦 Bank Mode Configuration")
+            print("-" * 70)
+            print("Perfect for controllers with 8 banks of 16 pads!")
+            print("")
+            print("Choose how to order slices WITHIN each bank:")
+            bank_sort_options = [
+                "chronological - Keep original time order (drums/percussion)",
+                "pitch_ascending - Low → High pitch (melodic content)",
+                "pitch_descending - High → Low pitch (melodic content)"
+            ]
+            bank_sort_choice = get_user_choice("Within-bank sorting:", bank_sort_options, default=1)
+            bank_sort_mode = ['chronological', 'pitch_ascending', 'pitch_descending'][bank_sort_choice - 1]
+
+        else:
+            use_bank_mode = False
+            reorganize = (reorg_choice == 2)
+            bank_sort_mode = None
+
+    else:
+        use_bank_mode = False
+        bank_sort_mode = None
+        print("Choose how to organize slices in the final chain:")
+        reorg_choice = get_user_choice("Organization:", [
+            "sequential - Keep slices in original order (chronological)",
+            "similarity - Reorganize by frequency characteristics (recommended)"
+        ], default=2)
+        reorganize = (reorg_choice == 2)
 
     # If using similarity, choose direction
     spectral_direction = 'low_to_high'
@@ -1034,7 +1173,7 @@ def main():
         ], default=2)
         spectral_direction = 'low_to_high' if dir_choice == 1 else 'high_to_low'
 
-    # Step 4b: Silence removal
+        # Step 4b: Silence removal
     print("\n🔇 Step 4b: Silence Removal")
     print("-" * 70)
     print("Remove silent/quiet slices from the chain?")
@@ -1099,11 +1238,16 @@ def main():
         print(f"CDP Post-Process: {os.path.basename(post_thread_path)} ✨")
     else:
         print(f"CDP Processing: No")
-    if reorganize:
+
+    if use_bank_mode:
+        print(f"Organization: Bank Mode (8×16)")
+        print(f"  Bank sorting: {bank_sort_mode}")
+    elif reorganize:
         direction_text = "Low→High" if spectral_direction == 'low_to_high' else "High→Low"
         print(f"Organization: Similarity ({direction_text})")
     else:
         print(f"Organization: Sequential (original order)")
+
     print(f"Silence removal: {'Yes' if remove_silence else 'No'}" + (f" (threshold: {silence_threshold_db}dB)" if remove_silence else ""))
     print(f"Processing: {processing_mode_selected}")
     print("=" * 70)
@@ -1127,14 +1271,146 @@ def main():
         os.makedirs(output_dir, exist_ok=True)
 
         if processing_mode == 'combine':
-            # Combine multiple files
-            combined_audio = combine_audio_files(selected_files, sample_rate)
+            if use_bank_mode:
+                # Process each file individually to get slices
+                audio_files_data = []
 
-            # CDP Pre-Processing (NEW!)
-            if use_cdp_pre and pre_thread_path:
-                combined_audio = process_full_audio_with_cdp(
-                    combined_audio, sample_rate, pre_thread_path, temp_dir
-                )
+                for i, input_file in enumerate(selected_files):
+                    print(f"\n{'='*70}")
+                    print(f"Processing file {i+1}/8 for Bank {i+1}")
+                    print(f"{'='*70}")
+
+                    # Load audio
+                    print(f"\n📂 Loading: {os.path.basename(input_file)}")
+                    file_audio, _ = librosa.load(input_file, sr=sample_rate, mono=True)
+                    print(f"✓ Loaded {len(file_audio)} samples ({len(file_audio)/sample_rate:.2f}s)")
+
+                    # CDP Pre-Processing if enabled
+                    if use_cdp_pre and pre_thread_path:
+                        file_audio = process_full_audio_with_cdp(
+                            file_audio, sample_rate, pre_thread_path, temp_dir
+                        )
+
+                    # Detect onsets for this file
+                    print(f"\n🔍 Detecting onsets using {slice_mode.upper()} mode...")
+                    if detection_method == 'percussive':
+                        onset_frames = librosa.onset.onset_detect(
+                            y=file_audio, sr=sample_rate, hop_length=slice_config['hop_length'],
+                            units='samples', backtrack=True
+                        )
+                    else:
+                        onset_frames = librosa.onset.onset_detect(
+                            y=file_audio, sr=sample_rate, hop_length=slice_config['hop_length'],
+                            units='samples', backtrack=True
+                        )
+
+                    onset_frames = np.append(onset_frames, len(file_audio))
+
+                    # Convert to slices
+                    file_slices = []
+                    for j in range(len(onset_frames) - 1):
+                        start = onset_frames[j]
+                        end = onset_frames[j + 1]
+                        file_slices.append({
+                            'index': j,
+                            'start': start,
+                            'end': end,
+                            'length': end - start,
+                            'duration_ms': ((end - start) / sample_rate) * 1000
+                        })
+
+                    print(f"Found {len(file_slices)} slices from onset detection")
+
+                    # Filter by minimum duration
+                    file_slices = filter_slices_by_duration(
+                        file_slices, slice_config['min_duration_ms'], sample_rate
+                    )
+
+                    # Remove silence if enabled
+                    if remove_silence:
+                        file_slices = remove_silent_slices(file_audio, file_slices, sample_rate, silence_threshold_db)
+
+                    # Store this file's data
+                    audio_files_data.append({
+                        'audio': file_audio,
+                        'slices': file_slices,
+                        'sr': sample_rate,
+                        'filename': os.path.basename(input_file)
+                    })
+
+                    print(f"✓ Bank {i+1}: {len(file_slices)} slices ready")
+
+                # Organize into banks
+                slices = organize_slices_by_banks(audio_files_data, bank_sort=bank_sort_mode)
+
+                # Build combined audio from organized slices
+                print(f"\n🔗 Building combined audio from {len(slices)} organized slices...")
+                combined_audio = []
+                cumulative_pos = 0
+
+                for s in slices:
+                    # Find which file this slice came from (each bank has 16 slices)
+                    file_idx = s['index'] // 16
+                    file_audio = audio_files_data[file_idx]['audio']
+                    audio_segment = file_audio[s['start']:s['end']]
+                    combined_audio.append(audio_segment)
+
+                    # Update slice position for final chain
+                    s['start'] = cumulative_pos
+                    s['end'] = cumulative_pos + len(audio_segment)
+                    s['length'] = len(audio_segment)
+                    cumulative_pos = s['end']
+
+                combined_audio = np.concatenate(combined_audio)
+                print(f"✓ Combined audio: {len(combined_audio)} samples ({len(combined_audio)/sample_rate:.2f}s)")
+
+                # CDP Post-Processing if enabled
+                if use_cdp_post and post_thread_path:
+                    combined_audio, slices = process_slices_with_cdp(
+                        combined_audio, slices, sample_rate, post_thread_path, temp_dir
+                    )
+
+                # Audio processing
+                if processing_config['mode'] != 'none':
+                    print(f"\n🎛️  Processing audio...")
+                    combined_audio = process_audio_chain(combined_audio, processing_config)
+
+                # Export (without reorganization since we already organized by banks)
+                output_path = os.path.join(output_dir, f'{output_name}_chain.wav')
+                export_slices_custom(combined_audio, slices, output_path, sample_rate,
+                                    generate_slc=True, reorganize=False, spectral_direction=None)
+
+                # Stats
+                lengths = [s['length'] for s in slices]
+                durations = [s['duration_ms'] for s in slices]
+
+                print("\n" + "=" * 70)
+                print("📊 RESULTS - BANK MODE")
+                print("=" * 70)
+                print(f"Slice mode: {slice_mode.upper()} ({slice_config['min_duration_ms']}-{slice_config['target_duration_ms']}ms)")
+                print(f"Bank organization: {bank_sort_mode}")
+                print(f"Total slices: {len(slices)} (8 banks × 16 slices)")
+                print(f"Shortest: {min(lengths):,} samples ({min(durations):.2f}ms)")
+                print(f"Longest: {max(lengths):,} samples ({max(durations):.2f}ms)")
+                print(f"Average: {sum(lengths)//len(lengths):,} samples ({sum(durations)/len(durations):.2f}ms)")
+                print(f"\n✨ Output: {output_path}")
+                print(f"✨ .slc file: {output_path.replace('.wav', '.slc')}")
+                if use_cdp_pre and use_cdp_post:
+                    print(f"✨ CDP pre-processed: {os.path.basename(pre_thread_path)}")
+                    print(f"✨ CDP post-processed: {os.path.basename(post_thread_path)}")
+                elif use_cdp_pre:
+                    print(f"✨ CDP pre-processed: {os.path.basename(pre_thread_path)}")
+                elif use_cdp_post:
+                    print(f"✨ CDP post-processed: {os.path.basename(post_thread_path)}")
+            else:
+                # Combine multiple files
+                combined_audio = combine_audio_files(selected_files, sample_rate)
+
+                # CDP Pre-Processing (NEW!)
+                if use_cdp_pre and pre_thread_path:
+                    combined_audio = process_full_audio_with_cdp(
+                        combined_audio, sample_rate, pre_thread_path, temp_dir
+                    )
 
             # Detect onsets
             print(f"\n🔍 Detecting onsets using {slice_mode.upper()} mode...")
@@ -1142,18 +1418,18 @@ def main():
 
             if detection_method == 'percussive':
                 onset_frames = librosa.onset.onset_detect(
-                    y=combined_audio, 
-                    sr=sample_rate, 
+                    y=combined_audio,
+                    sr=sample_rate,
                     hop_length=slice_config['hop_length'],
-                    units='samples', 
+                    units='samples',
                     backtrack=True
                 )
             else:
                 onset_frames = librosa.onset.onset_detect(
-                    y=combined_audio, 
+                    y=combined_audio,
                     sr=sample_rate,
-                    hop_length=slice_config['hop_length'], 
-                    units='samples', 
+                    hop_length=slice_config['hop_length'],
+                    units='samples',
                     backtrack=True
                 )
 
@@ -1173,11 +1449,11 @@ def main():
                 })
 
             print(f"Found {len(all_slices)} slices from onset detection")
-            
+
             # Filter by minimum duration
             all_slices = filter_slices_by_duration(
-                all_slices, 
-                slice_config['min_duration_ms'], 
+                all_slices,
+                slice_config['min_duration_ms'],
                 sample_rate
             )
 
@@ -1196,9 +1472,9 @@ def main():
             # Force exact target count
             print(f"\n🎯 Forcing exactly {target_slices} slices...")
             slices = force_target_slices(
-                slices, 
-                target_slices, 
-                len(combined_audio), 
+                slices,
+                target_slices,
+                len(combined_audio),
                 sample_rate,
                 min_duration_ms=slice_config['min_duration_ms']
             )
@@ -1211,9 +1487,9 @@ def main():
                 if len(slices) < target_slices:
                     print(f"\n🎯 Re-subdividing to reach {target_slices} after silence removal...")
                     slices = force_target_slices(
-                        slices, 
-                        target_slices, 
-                        len(combined_audio), 
+                        slices,
+                        target_slices,
+                        len(combined_audio),
                         sample_rate,
                         min_duration_ms=slice_config['min_duration_ms']
                     )
@@ -1225,9 +1501,9 @@ def main():
                     if len(slices) < target_slices:
                         print(f"\n🎯 Final subdivision to reach {target_slices}...")
                         slices = force_target_slices(
-                            slices, 
-                            target_slices, 
-                            len(combined_audio), 
+                            slices,
+                            target_slices,
+                            len(combined_audio),
                             sample_rate,
                             min_duration_ms=slice_config['min_duration_ms']
                         )
@@ -1296,18 +1572,18 @@ def main():
 
                 if detection_method == 'percussive':
                     onset_frames = librosa.onset.onset_detect(
-                        y=audio, 
-                        sr=sample_rate, 
+                        y=audio,
+                        sr=sample_rate,
                         hop_length=slice_config['hop_length'],
-                        units='samples', 
+                        units='samples',
                         backtrack=True
                     )
                 else:
                     onset_frames = librosa.onset.onset_detect(
-                        y=audio, 
+                        y=audio,
                         sr=sample_rate,
-                        hop_length=slice_config['hop_length'], 
-                        units='samples', 
+                        hop_length=slice_config['hop_length'],
+                        units='samples',
                         backtrack=True
                     )
 
@@ -1327,11 +1603,11 @@ def main():
                     })
 
                 print(f"Found {len(all_slices)} slices from onset detection")
-                
+
                 # Filter by minimum duration
                 all_slices = filter_slices_by_duration(
-                    all_slices, 
-                    slice_config['min_duration_ms'], 
+                    all_slices,
+                    slice_config['min_duration_ms'],
                     sample_rate
                 )
 
@@ -1350,9 +1626,9 @@ def main():
                 # Force exact target count
                 print(f"\n🎯 Forcing exactly {target_slices} slices...")
                 slices = force_target_slices(
-                    slices, 
-                    target_slices, 
-                    len(audio), 
+                    slices,
+                    target_slices,
+                    len(audio),
                     sample_rate,
                     min_duration_ms=slice_config['min_duration_ms']
                 )
@@ -1365,9 +1641,9 @@ def main():
                     if len(slices) < target_slices:
                         print(f"\n🎯 Re-subdividing to reach {target_slices} after silence removal...")
                         slices = force_target_slices(
-                            slices, 
-                            target_slices, 
-                            len(audio), 
+                            slices,
+                            target_slices,
+                            len(audio),
                             sample_rate,
                             min_duration_ms=slice_config['min_duration_ms']
                         )
@@ -1379,9 +1655,9 @@ def main():
                         if len(slices) < target_slices:
                             print(f"\n🎯 Final subdivision to reach {target_slices}...")
                             slices = force_target_slices(
-                                slices, 
-                                target_slices, 
-                                len(audio), 
+                                slices,
+                                target_slices,
+                                len(audio),
                                 sample_rate,
                                 min_duration_ms=slice_config['min_duration_ms']
                             )
