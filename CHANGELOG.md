@@ -2,6 +2,33 @@
 
 All notable changes to Slice Machine will be documented in this file.
 
+## [1.2.0] - 2026-03-30
+
+### 🔧 OOM Crash Fix & Compression Performance
+
+#### Bug Fixes
+- **Fixed `Killed: 9` (out-of-memory) crash during audio processing**
+  - Root cause: compression/normalization was applied to the full source audio
+    (e.g. a 2-hour ambient file = ~1.4 GB of float32 in RAM) rather than the
+    assembled ~18-second output chain
+  - Fix: moved `process_audio_chain()` inside `export_slices_custom()` so it
+    always runs on the chain, regardless of source file size
+  - Affects all processing modes: single, combine, and bank mode
+
+#### Performance
+- **Vectorized compressor — eliminated Python sample-by-sample loop**
+  - Old implementation: `for i in range(1, len(gain))` — O(n) Python loop
+    over millions of samples; extremely slow and holds multiple large arrays
+  - New implementation: two `scipy.signal.lfilter` passes (attack + release),
+    fully vectorized — typically 100–500× faster for long audio
+  - Added `from scipy.signal import lfilter` import (scipy already in venv)
+
+#### Code Quality
+- `export_slices_custom()` now accepts optional `processing_config` parameter
+- Processing happens once on the final chain, never on the raw source audio
+
+---
+
 ## [1.1.0] - 2026-02-10
 
 ### 🎵 Configurable Slice Length Modes

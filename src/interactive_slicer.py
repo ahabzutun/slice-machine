@@ -10,6 +10,7 @@ import os
 import numpy as np
 import struct
 import warnings
+from scipy.signal import lfilter
 
 # Suppress librosa warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='librosa')
@@ -237,7 +238,7 @@ if __name__ == '__main__':
 # ============================================================================
 
 def compress_audio(audio, threshold_db=-20, ratio=4.0, attack_ms=5, release_ms=50, sr=48000):
-    """Apply dynamic range compression"""
+    """Apply dynamic range compression (vectorized - no Python loops)"""
     threshold = 10 ** (threshold_db / 20)
     hop_length = int(sr * 0.001)
     rms = librosa.feature.rms(y=audio, hop_length=hop_length)[0]
@@ -246,19 +247,27 @@ def compress_audio(audio, threshold_db=-20, ratio=4.0, attack_ms=5, release_ms=5
 
     gain = np.ones_like(envelope)
     above_threshold = envelope > threshold
-    gain[above_threshold] = threshold / envelope[above_threshold]
-    gain[above_threshold] = gain[above_threshold] ** (1 - 1/ratio)
+    gain[above_threshold] = (threshold / envelope[above_threshold]) ** (1 - 1/ratio)
 
-    attack_samples = int(sr * attack_ms / 1000)
-    release_samples = int(sr * release_ms / 1000)
+    # Vectorized smoothing via scipy lfilter (two-pass: attack then release)
+    # Attack: smooth gain reductions (gain going down = compressor engaging)
+    attack_coef = 1 - np.exp(-1 / max(1, int(sr * attack_ms / 1000)))
+    release_coef = 1 - np.exp(-1 / max(1, int(sr * release_ms / 1000)))
 
-    smoothed_gain = np.copy(gain)
-    for i in range(1, len(gain)):
-        if gain[i] < smoothed_gain[i-1]:
-            alpha = 1 - np.exp(-1 / attack_samples)
-        else:
-            alpha = 1 - np.exp(-1 / release_samples)
-        smoothed_gain[i] = alpha * gain[i] + (1 - alpha) * smoothed_gain[i-1]
+    # Forward pass with release coefficient (gain increasing = release)
+    b_rel = [release_coef]
+    a_rel = [1, -(1 - release_coef)]
+    smoothed_release = lfilter(b_rel, a_rel, gain)
+
+    # Forward pass with attack coefficient (gain decreasing = attack)
+    b_att = [attack_coef]
+    a_att = [1, -(1 - attack_coef)]
+    smoothed_attack = lfilter(b_att, a_att, gain)
+
+    # Use the more conservative (higher) gain at each point
+    # When gain drops (attack): use the slower attack-smoothed version
+    # When gain rises (release): use the slower release-smoothed version
+    smoothed_gain = np.where(smoothed_attack < smoothed_release, smoothed_attack, smoothed_release)
 
     return audio * smoothed_gain
 
@@ -792,9 +801,11 @@ def organize_slices_by_banks(audio_files_data, bank_sort='chronological'):
 
     return organized_slices
 
-def export_slices_custom(audio, slices, output_path, sr, generate_slc=True, reorganize=True, spectral_direction='low_to_high'):
+def export_slices_custom(audio, slices, output_path, sr, generate_slc=True, reorganize=True, spectral_direction='low_to_high', processing_config=None):
     """
-    Export slices as a sample chain with built-in .slc generation
+    Export slices as a sample chain with built-in .slc generation.
+    Audio processing (compress/normalize) is applied to the assembled chain,
+    NOT the full source audio, to avoid out-of-memory kills on large inputs.
     """
     print(f"\n💾 Exporting sample chain...")
     print(f"   Path: {output_path}")
@@ -825,6 +836,11 @@ def export_slices_custom(audio, slices, output_path, sr, generate_slc=True, reor
 
     # Concatenate
     chain_audio = np.concatenate(chain_audio)
+
+    # Apply audio processing to the chain (much smaller than the full source file)
+    if processing_config and processing_config.get('mode', 'none') != 'none':
+        print(f"\n🎛️  Processing audio chain ({len(chain_audio)/sr:.2f}s)...")
+        chain_audio = process_audio_chain(chain_audio, processing_config)
 
     # Write WAV
     sf.write(output_path, chain_audio, sr)
@@ -1370,15 +1386,11 @@ def main():
                         combined_audio, slices, sample_rate, post_thread_path, temp_dir
                     )
 
-                # Audio processing
-                if processing_config['mode'] != 'none':
-                    print(f"\n🎛️  Processing audio...")
-                    combined_audio = process_audio_chain(combined_audio, processing_config)
-
                 # Export (without reorganization since we already organized by banks)
                 output_path = os.path.join(output_dir, f'{output_name}_chain.wav')
                 export_slices_custom(combined_audio, slices, output_path, sample_rate,
-                                    generate_slc=True, reorganize=False, spectral_direction=None)
+                                    generate_slc=True, reorganize=False, spectral_direction=None,
+                                    processing_config=processing_config)
 
                 # Stats
                 lengths = [s['length'] for s in slices]
@@ -1516,14 +1528,9 @@ def main():
                     combined_audio, slices, sample_rate, post_thread_path, temp_dir
                 )
 
-            # Process audio
-            if processing_config['mode'] != 'none':
-                print(f"\n🎛️  Processing audio...")
-                combined_audio = process_audio_chain(combined_audio, processing_config)
-
             # Export
             output_path = os.path.join(output_dir, f'{output_name}_chain.wav')
-            export_slices_custom(combined_audio, slices, output_path, sample_rate, generate_slc=True, reorganize=reorganize, spectral_direction=spectral_direction)
+            export_slices_custom(combined_audio, slices, output_path, sample_rate, generate_slc=True, reorganize=reorganize, spectral_direction=spectral_direction, processing_config=processing_config)
 
             # Stats
             lengths = [s['length'] for s in slices]
@@ -1670,11 +1677,6 @@ def main():
                         audio, slices, sample_rate, post_thread_path, temp_dir
                     )
 
-                # Process audio
-                if processing_config['mode'] != 'none':
-                    print(f"\n🎛️  Processing audio...")
-                    audio = process_audio_chain(audio, processing_config)
-
                 # Generate output name for this file
                 if len(selected_files) == 1:
                     file_output_name = output_name
@@ -1683,7 +1685,7 @@ def main():
 
                 # Export
                 output_path = os.path.join(output_dir, f'{file_output_name}_chain.wav')
-                export_slices_custom(audio, slices, output_path, sample_rate, generate_slc=True, reorganize=reorganize, spectral_direction=spectral_direction)
+                export_slices_custom(audio, slices, output_path, sample_rate, generate_slc=True, reorganize=reorganize, spectral_direction=spectral_direction, processing_config=processing_config)
 
                 # Stats
                 lengths = [s['length'] for s in slices]
