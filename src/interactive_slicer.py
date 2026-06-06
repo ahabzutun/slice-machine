@@ -59,179 +59,68 @@ SLICE_MODES = {
 }
 
 # ============================================================================
-# BUILT-IN SLC GENERATOR (no external dependencies)
+# BUILT-IN SLC GENERATOR
 # ============================================================================
-
-import struct
-import os
-
-import struct
-import os
 
 def generate_slc_file(wav_path, slices, total_samples):
     """
-    Generate .slc file for ER-301 using the ACTUAL format from hardware
-
-    REAL Format (reverse-engineered from working ER-301 file):
+    Generate .slc file for ER-301 using the ACTUAL format from hardware.
 
     HEADER (27 bytes):
-    - Bytes 0-3:   Magic number: 0xABCDDCBA (little-endian)
-    - Bytes 4-7:   Version: 7 (uint32 little-endian)
-    - Bytes 8-23:  Label: "Slices" null-padded to 16 bytes
-    - Bytes 24-26: Unknown (3 zero bytes)
+    - Bytes  0-3:  Magic number 0xABCDDCBA (uint32 LE)
+    - Bytes  4-7:  Version 7 (uint32 LE)
+    - Bytes  8-13: Label "Slices"
+    - Bytes 14-22: Null padding
+    - Bytes 23-26: Slice count (uint32 LE)  ← was mistaken as a constant 0x80
 
-    ENTRIES (128 entries × 16 bytes = 2048 bytes):
-    Each entry:
-    - Bytes 0-3:   Sample position (uint32 little-endian, FULL position, NOT divided by 256!)
-    - Bytes 4-7:   Float 0.0 (4 bytes)
-    - Bytes 8-11:  Float 0.0 (4 bytes)
-    - Bytes 12-15: Float 1.0 (4 bytes)
-
-    Total file size: 27 + 2048 = 2075 bytes
-
-    Args:
-        wav_path: Path to the .wav file
-        slices: List of slice dictionaries with 'start' positions (in samples)
-        total_samples: Total audio length (not used in .slc)
+    ENTRIES (N × 16 bytes):
+    - Bytes 0-3:   Sample position (uint32 LE)
+    - Bytes 4-7:   Float 0.0
+    - Bytes 8-11:  Float 0.0
+    - Bytes 12-15: Float 1.0
     """
     slc_path = wav_path.replace('.wav', '.slc')
+    n = len(slices)
 
-    print(f"\n📄 Generating .slc file (CORRECT FORMAT): {slc_path}")
-    print(f"   Input slices: {len(slices)}")
-
-    # Ensure exactly 128 slices
-    if len(slices) != 128:
-        print(f"⚠️  WARNING: Expected 128 slices, got {len(slices)}")
-        print(f"   ER-301 requires EXACTLY 128 slice markers!")
-
-        if len(slices) < 128:
-            print(f"   Padding with final position to reach 128...")
-            while len(slices) < 128:
-                slices.append(slices[-1])
-        else:
-            print(f"   Trimming to first 128 slices...")
-            slices = slices[:128]
+    print(f"\n📄 Generating .slc file: {slc_path}")
+    print(f"   Slices: {n}")
 
     with open(slc_path, 'wb') as f:
-        # ============================================================
-        # HEADER (27 bytes)
-        # ============================================================
+        # Header
+        f.write(struct.pack('<I', 0xABCDDCBA))  # bytes  0-3:  magic
+        f.write(struct.pack('<I', 7))            # bytes  4-7:  version
+        f.write(b'Slices')                       # bytes  8-13: label
+        f.write(b'\x00' * 9)                     # bytes 14-22: padding
+        f.write(struct.pack('<I', n))            # bytes 23-26: slice count
 
-        # Magic number: 0xABCDDCBA in little-endian
-        f.write(struct.pack('<I', 0xABCDDCBA))
-
-        # Version: 7
-        f.write(struct.pack('<I', 7))
-
-        # Label: "Slices" + padding (19 bytes total to complete header)
-        # Bytes 8-13: "Slices" (6 bytes)
-        # Bytes 14-22: nulls (9 bytes)
-        # Byte 23: 0x80
-        # Bytes 24-26: nulls (3 bytes)
-        f.write(b'Slices')              # 6 bytes
-        f.write(b'\x00' * 9)             # 9 null bytes
-        f.write(b'\x80')                 # 1 byte: 0x80
-        f.write(b'\x00' * 3)             # 3 null bytes
-        # Total: 6 + 9 + 1 + 3 = 19 bytes (completes 27-byte header)
-
-        # ============================================================
-        # ENTRIES (128 × 16 bytes)
-        # ============================================================
-
+        # Entries
         for i, s in enumerate(slices):
-            position = s['start']
+            position = max(0, min(s['start'], 0xFFFFFFFF))
+            f.write(struct.pack('<I', position))
+            f.write(struct.pack('<f', 0.0))
+            f.write(struct.pack('<f', 0.0))
+            f.write(struct.pack('<f', 1.0))
 
-            # Safety check
-            if position < 0:
-                print(f"⚠️  Warning: Slice {i} has negative position, using 0")
-                position = 0
+    expected = 27 + n * 16
+    actual   = os.path.getsize(slc_path)
 
-            if position > 0xFFFFFFFF:
-                print(f"⚠️  Warning: Slice {i} position too large, clamping")
-                position = 0xFFFFFFFF
+    print(f"✓ Generated {slc_path}")
+    print(f"   File size: {actual} bytes (expected {expected})")
 
-            # Write 16-byte entry
-            f.write(struct.pack('<I', position))    # Sample position (uint32)
-            f.write(struct.pack('<f', 0.0))         # Float 0.0
-            f.write(struct.pack('<f', 0.0))         # Float 0.0
-            f.write(struct.pack('<f', 1.0))         # Float 1.0
-
-    # ============================================================
-    # VERIFY
-    # ============================================================
-
-    if os.path.exists(slc_path):
-        file_size = os.path.getsize(slc_path)
-        expected_size = 27 + (128 * 16)  # 2075 bytes
-
-        print(f"✓ Generated {slc_path}")
-        print(f"   File size: {file_size} bytes")
-        print(f"   Expected: {expected_size} bytes")
-
-        if file_size == expected_size:
-            print(f"   ✓ File size is CORRECT!")
-
-            # Verify first and last positions
-            with open(slc_path, 'rb') as f:
-                f.seek(27)  # Skip header
-
-                # First entry
-                first_pos = struct.unpack('<I', f.read(4))[0]
-
-                # Last entry
-                f.seek(27 + (127 * 16))
-                last_pos = struct.unpack('<I', f.read(4))[0]
-
-                print(f"   First slice: sample {first_pos:,}")
-                print(f"   Last slice: sample {last_pos:,}")
-        else:
-            print(f"   ❌ ERROR: Size mismatch!")
-
-        return slc_path
+    if actual == expected:
+        print(f"   ✓ Size correct")
+        with open(slc_path, 'rb') as f:
+            f.seek(27)
+            first_pos = struct.unpack('<I', f.read(4))[0]
+            f.seek(27 + (n - 1) * 16)
+            last_pos  = struct.unpack('<I', f.read(4))[0]
+        print(f"   First slice: sample {first_pos:,}")
+        print(f"   Last slice:  sample {last_pos:,}")
     else:
-        print(f"❌ Failed to create .slc file")
-        return None
+        print(f"   ❌ ERROR: size mismatch!")
 
+    return slc_path
 
-# Test
-if __name__ == '__main__':
-    # Create test slices
-    test_slices = []
-    for i in range(128):
-        test_slices.append({
-            'index': i,
-            'start': i * 1000,  # 1000 samples apart
-            'end': (i + 1) * 1000,
-            'length': 1000
-        })
-
-    generate_slc_file('/tmp/test_chain.wav', test_slices, 128000)
-
-    print("\n" + "="*70)
-    print("VERIFICATION")
-    print("="*70)
-
-    # Verify against hardware format
-    with open('/tmp/test_chain.slc', 'rb') as f:
-        # Check header
-        magic = struct.unpack('<I', f.read(4))[0]
-        version = struct.unpack('<I', f.read(4))[0]
-        label = f.read(16)
-        unknown = f.read(3)
-
-        print(f"Magic: 0x{magic:08X} (should be 0xABCDDCBA)")
-        print(f"Version: {version} (should be 7)")
-        print(f"Label: '{label.decode('ascii', errors='replace').rstrip(chr(0))}'")
-        print(f"Unknown bytes: {unknown.hex()}")
-
-        # Check entries
-        print(f"\nFirst 5 entries:")
-        for i in range(5):
-            pos = struct.unpack('<I', f.read(4))[0]
-            f0 = struct.unpack('<f', f.read(4))[0]
-            f1 = struct.unpack('<f', f.read(4))[0]
-            f2 = struct.unpack('<f', f.read(4))[0]
-            print(f"  Slice {i}: pos={pos:6d}, floats=[{f0:.1f}, {f1:.1f}, {f2:.1f}]")
 
 # ============================================================================
 # Audio Processing Functions
@@ -321,10 +210,6 @@ def process_audio_chain(audio, processing_config):
         processed = normalize_audio(processed, method=method, target_db=target)
 
     return processed
-
-# ============================================================================
-# CDP Processing Functions
-# ============================================================================
 
 # ============================================================================
 # CDP Processing Functions
@@ -1027,14 +912,7 @@ def main():
     target_slices = get_user_input("\nSlices (will be forced exactly)", default=128, input_type=int)
     sample_rate = get_user_input("Sample rate (Hz)", default=48000, input_type=int)
 
-    # Step 3: Detection
-    print("\n🔍 Step 3: Detection Method")
-    print("-" * 70)
-    detection_choice = get_user_choice("Method:", ["energy", "percussive"], default=1)
-    detection_method = 'energy' if detection_choice == 1 else 'percussive'
-
-    # Step 3a: Slice Length Mode (NEW!)
-    print("\n⏱️  Step 3a: Slice Length Mode")
+    print("\n🔍 Step 3: Slice Length Mode")
     print("-" * 70)
     print("Choose target slice length based on your content type:")
     print("")
@@ -1056,11 +934,8 @@ def main():
     print(f"   Target duration: {slice_config['target_duration_ms']}ms")
     print(f"   Onset sensitivity: {slice_config['hop_length']} hop length")
 
-    # Step 3b: CDP Pre-Processing (NEW!)
     use_cdp_pre = False
     pre_thread_path = None
-
-    # Step 3c: CDP Post-Processing (NEW!)
     use_cdp_post = False
     post_thread_path = None
 
@@ -1301,7 +1176,7 @@ def main():
                     file_audio, _ = librosa.load(input_file, sr=sample_rate, mono=True)
                     print(f"✓ Loaded {len(file_audio)} samples ({len(file_audio)/sample_rate:.2f}s)")
 
-                    # CDP Pre-Processing if enabled
+                    # CDP Pre-Processing
                     if use_cdp_pre and pre_thread_path:
                         file_audio = process_full_audio_with_cdp(
                             file_audio, sample_rate, pre_thread_path, temp_dir
@@ -1309,16 +1184,10 @@ def main():
 
                     # Detect onsets for this file
                     print(f"\n🔍 Detecting onsets using {slice_mode.upper()} mode...")
-                    if detection_method == 'percussive':
-                        onset_frames = librosa.onset.onset_detect(
-                            y=file_audio, sr=sample_rate, hop_length=slice_config['hop_length'],
-                            units='samples', backtrack=True
-                        )
-                    else:
-                        onset_frames = librosa.onset.onset_detect(
-                            y=file_audio, sr=sample_rate, hop_length=slice_config['hop_length'],
-                            units='samples', backtrack=True
-                        )
+                    onset_frames = librosa.onset.onset_detect(
+                        y=file_audio, sr=sample_rate, hop_length=slice_config['hop_length'],
+                        units='samples', backtrack=True
+                    )
 
                     onset_frames = np.append(onset_frames, len(file_audio))
 
@@ -1418,7 +1287,7 @@ def main():
                 # Combine multiple files
                 combined_audio = combine_audio_files(selected_files, sample_rate)
 
-                # CDP Pre-Processing (NEW!)
+                # CDP Pre-Processing
                 if use_cdp_pre and pre_thread_path:
                     combined_audio = process_full_audio_with_cdp(
                         combined_audio, sample_rate, pre_thread_path, temp_dir
@@ -1428,22 +1297,13 @@ def main():
             print(f"\n🔍 Detecting onsets using {slice_mode.upper()} mode...")
             print(f"   Hop length: {slice_config['hop_length']} (sensitivity)")
 
-            if detection_method == 'percussive':
-                onset_frames = librosa.onset.onset_detect(
-                    y=combined_audio,
-                    sr=sample_rate,
-                    hop_length=slice_config['hop_length'],
-                    units='samples',
-                    backtrack=True
-                )
-            else:
-                onset_frames = librosa.onset.onset_detect(
-                    y=combined_audio,
-                    sr=sample_rate,
-                    hop_length=slice_config['hop_length'],
-                    units='samples',
-                    backtrack=True
-                )
+            onset_frames = librosa.onset.onset_detect(
+                y=combined_audio,
+                sr=sample_rate,
+                hop_length=slice_config['hop_length'],
+                units='samples',
+                backtrack=True
+            )
 
             onset_frames = np.append(onset_frames, len(combined_audio))
 
@@ -1522,7 +1382,7 @@ def main():
                     elif len(slices) == pre_cleanup_count:
                         print(f"✓ No additional silent slices found - we're done!")
 
-            # CDP Processing (NEW!)
+            # CDP Post-Processing
             if use_cdp_post and post_thread_path:
                 combined_audio, slices = process_slices_with_cdp(
                     combined_audio, slices, sample_rate, post_thread_path, temp_dir
@@ -1567,7 +1427,7 @@ def main():
                 audio, _ = librosa.load(input_file, sr=sample_rate, mono=True)
                 print(f"✓ Loaded {len(audio)} samples ({len(audio)/sample_rate:.2f}s)")
 
-                # CDP Pre-Processing (NEW!)
+                # CDP Pre-Processing
                 if use_cdp_pre and pre_thread_path:
                     audio = process_full_audio_with_cdp(
                         audio, sample_rate, pre_thread_path, temp_dir
@@ -1577,22 +1437,13 @@ def main():
                 print(f"\n🔍 Detecting onsets using {slice_mode.upper()} mode...")
                 print(f"   Hop length: {slice_config['hop_length']} (sensitivity)")
 
-                if detection_method == 'percussive':
-                    onset_frames = librosa.onset.onset_detect(
-                        y=audio,
-                        sr=sample_rate,
-                        hop_length=slice_config['hop_length'],
-                        units='samples',
-                        backtrack=True
-                    )
-                else:
-                    onset_frames = librosa.onset.onset_detect(
-                        y=audio,
-                        sr=sample_rate,
-                        hop_length=slice_config['hop_length'],
-                        units='samples',
-                        backtrack=True
-                    )
+                onset_frames = librosa.onset.onset_detect(
+                    y=audio,
+                    sr=sample_rate,
+                    hop_length=slice_config['hop_length'],
+                    units='samples',
+                    backtrack=True
+                )
 
                 onset_frames = np.append(onset_frames, len(audio))
 
@@ -1671,7 +1522,7 @@ def main():
                         elif len(slices) == pre_cleanup_count:
                             print(f"✓ No additional silent slices found - we're done!")
 
-                # CDP Processing (NEW!)
+                # CDP Post-Processing
                 if use_cdp_post and post_thread_path:
                     audio, slices = process_slices_with_cdp(
                         audio, slices, sample_rate, post_thread_path, temp_dir
