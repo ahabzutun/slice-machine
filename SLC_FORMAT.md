@@ -1,159 +1,172 @@
 # ER-301 .SLC File Format Specification
 
-**Version:** 7
-**Reverse-engineered:** February 2026
+**Specification version:** 2.0
+**Last updated:** June 2026
 
 ## Overview
 
-The `.slc` (slice) file format stores sample slice positions for the Orthogonal Devices ER-301 eurorack module. When a `.wav` and `.slc` file with matching names are present, the ER-301 automatically loads the slice positions.
+The `.slc` file stores slice (cue) positions for the Orthogonal Devices ER-301
+eurorack module. When a `.wav` and `.slc` with matching stems are present in the
+same directory, the ER-301 automatically loads the slice positions from the `.slc`.
+
+The format supports an arbitrary number of slices (confirmed working with 1024+
+on firmware 0.6.16). The slice count is encoded in the header, so the ER-301
+knows exactly how many entries to read.
+
+---
 
 ## File Structure
 
 ```
-┌─────────────────────────────────────┐
-│  Header (40 bytes)                  │
-├─────────────────────────────────────┤
-│  Slice Entry 0 (16 bytes)           │
-├─────────────────────────────────────┤
-│  Slice Entry 1 (16 bytes)           │
-├─────────────────────────────────────┤
-│  ...                                │
-├─────────────────────────────────────┤
-│  Slice Entry N-1 (16 bytes)         │
-└─────────────────────────────────────┘
+┌──────────────────────────────────┐
+│  Header  (27 bytes)              │
+├──────────────────────────────────┤
+│  Slice Entry 0  (16 bytes)       │
+│  Slice Entry 1  (16 bytes)       │
+│  ...                             │
+│  Slice Entry N-1  (16 bytes)     │
+└──────────────────────────────────┘
 ```
 
-**Total Size:** `40 + (N × 16)` bytes, where N = number of slices
+**Total size:** `27 + (N × 16)` bytes
 
-## Header Format (40 bytes)
+---
 
-| Offset | Size | Type    | Value         | Description                    |
-|--------|------|---------|---------------|--------------------------------|
-| 0      | 4    | uint32  | 0xABCDDCBA    | Magic number (little-endian)   |
-| 4      | 4    | uint32  | 7             | Format version                 |
-| 8      | 6    | char[6] | "Slices"      | ASCII marker                   |
-| 14     | 9    | byte[9] | 0x00...       | Padding (all zeros)            |
-| 23     | 1    | uint8   | N             | Number of slices               |
-| 24     | 16   | byte[16]| 0x00...       | Padding (all zeros)            |
+## Header (27 bytes)
 
-**Header in C:**
-```c
-struct SLCHeader {
-    uint32_t magic;        // 0xABCDDCBA
-    uint32_t version;      // 7
-    char marker[6];        // "Slices"
-    uint8_t padding1[9];   // zeros
-    uint8_t slice_count;   // N
-    uint8_t padding2[16];  // zeros
-} __attribute__((packed));
+| Offset | Size | Type      | Value      | Description                  |
+|--------|------|-----------|------------|------------------------------|
+| 0      | 4    | uint32 LE | 0xABCDDCBA | Magic number                 |
+| 4      | 4    | uint32 LE | 7          | Format version               |
+| 8      | 6    | char[6]   | "Slices"   | ASCII label                  |
+| 14     | 9    | byte[9]   | 0x00…      | Null padding                 |
+| 23     | 4    | uint32 LE | N          | **Slice count**              |
+
+> **Note on byte 23:** Early reverse-engineering mistook this field for an
+> "unknown constant 0x80" because all reference files happened to have 128
+> slices (0x80 = 128). It is actually a **uint32 LE slice count** spanning
+> bytes 23–26. Hardware files with 128 slices read as `80 00 00 00` = 128.
+> Writing the wrong value here causes the ER-301 to load only that many
+> entries regardless of how many are present in the file.
+
+**Header bytes (128-slice example):**
+```
+BA DC CD AB  07 00 00 00  53 6C 69 63  65 73 00 00
+00 00 00 00  00 00 00 00  80 00 00 00
+^magic       ^version     ^"Slices"   ^padding     ^count=128
 ```
 
-## Slice Entry Format (16 bytes)
+---
 
-| Offset | Size | Type     | Description                              |
-|--------|------|----------|------------------------------------------|
-| 0      | 4    | byte[4]  | Pattern: `00 80 3F XX`                   |
-| 4      | 2    | uint16   | Sample position ÷ 256 (little-endian)   |
-| 6      | 10   | byte[10] | Padding (all zeros)                      |
+## Slice Entry (16 bytes each)
 
-**Notes:**
-- The 4th byte (XX) alternates: `0x80` for even slices, `0x00` for odd slices
-- Sample positions are stored divided by 256 for compression
-- To get actual sample position: `position = uint16_value × 256`
+| Offset | Size | Type      | Description            |
+|--------|------|-----------|------------------------|
+| 0      | 4    | uint32 LE | Sample position        |
+| 4      | 4    | float32   | 0.0 (constant)         |
+| 8      | 4    | float32   | 0.0 (constant)         |
+| 12     | 4    | float32   | 1.0 (constant)         |
 
-**Slice Entry in C:**
-```c
-struct SLCSlice {
-    uint8_t pattern[3];    // 00 80 3F
-    uint8_t alternating;   // 0x80 (even) or 0x00 (odd)
-    uint16_t position;     // sample_pos / 256
-    uint8_t padding[10];   // zeros
-} __attribute__((packed));
-```
+- **Sample position** is the full integer sample offset from the start of the
+  paired `.wav` file — **not** divided by 256 or any other factor.
+- The three float fields are always `0.0, 0.0, 1.0` in every observed file.
+  Their meaning is unknown but they must be present.
+- Entries must be in ascending order of sample position.
 
-## Example
+---
 
-For a file with 4 slices at sample positions 0, 48000, 96000, 144000:
+## Constraints
 
-**Hex Dump:**
-```
-Offset  00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F  ASCII
-------  -----------------------------------------------  ----------------
-0x0000  BA DC CD AB 07 00 00 00 53 6C 69 63 65 73 00 00  ....Slices..
-0x0010  00 00 00 00 00 00 00 04 00 00 00 00 00 00 00 00  ................
-0x0020  00 00 00 00 00 00 00 00 00 80 3F 80 00 00 00 00  ..........?.....
-0x0030  00 00 00 00 00 00 00 00 00 80 3F 00 BB 00 00 00  ..........?.....
-0x0040  00 00 00 00 00 00 00 00 00 80 3F 80 77 01 00 00  ..........?.w...
-0x0050  00 00 00 00 00 00 00 00 00 80 3F 00 32 02 00 00  ..........?.2...
-0x0060  00 00 00 00 00 00 00 00                          ........
-```
+| Property              | Value                                      |
+|-----------------------|--------------------------------------------|
+| Magic                 | `0xABCDDCBA`                               |
+| Version               | `7`                                        |
+| Min slice count       | 1                                          |
+| Max slice count       | >2000 (confirmed on firmware 0.6.16)       |
+| Max sample position   | 4,294,967,295 (uint32 max, ~24h @ 48kHz)  |
+| Position resolution   | 1 sample (exact)                           |
 
-**Decoded Slices:**
-- Slice 0: position = 0 × 256 = 0 samples (0.00s @ 48kHz)
-- Slice 1: position = 187 × 256 = 47,872 samples (0.997s @ 48kHz)
-- Slice 2: position = 375 × 256 = 96,000 samples (2.00s @ 48kHz)
-- Slice 3: position = 562 × 256 = 143,872 samples (2.997s @ 48kHz)
+---
 
 ## Python Implementation
 
 ```python
 import struct
 
-def write_slc_file(output_path, slice_positions):
-    """Generate a .slc file from sample positions"""
+SLC_MAGIC   = 0xABCDDCBA
+SLC_VERSION = 7
 
-    data = bytearray()
+def write_slc(path, positions):
+    """
+    Write an ER-301 .slc file.
 
-    # Header
-    data.extend(struct.pack('<I', 0xABCDDCBA))  # Magic
-    data.extend(struct.pack('<I', 7))            # Version
-    data.extend(b'Slices')                       # Marker
-    data.extend(b'\x00' * 9)                     # Padding
-    data.extend(struct.pack('B', len(slice_positions)))  # Count
-    data.extend(b'\x00' * 16)                    # Padding
+    Args:
+        path:      Output file path (e.g. 'chain.slc').
+        positions: List of integer sample positions, ascending.
+    """
+    n = len(positions)
+    with open(path, 'wb') as f:
+        # Header (27 bytes)
+        f.write(struct.pack('<I', SLC_MAGIC))    # magic
+        f.write(struct.pack('<I', SLC_VERSION))  # version
+        f.write(b'Slices')                       # label
+        f.write(b'\x00' * 9)                     # padding
+        f.write(struct.pack('<I', n))            # slice count
 
-    # Slice entries
-    for i, pos in enumerate(slice_positions):
-        pattern_byte = 0x80 if i % 2 == 0 else 0x00
-        data.extend(bytes([0x00, 0x80, 0x3F, pattern_byte]))
-        data.extend(struct.pack('<H', int(pos / 256)))
-        data.extend(b'\x00' * 10)
+        # Entries (16 bytes each)
+        for pos in positions:
+            f.write(struct.pack('<I', pos))      # sample position
+            f.write(struct.pack('<f', 0.0))
+            f.write(struct.pack('<f', 0.0))
+            f.write(struct.pack('<f', 1.0))
 
-    with open(output_path, 'wb') as f:
-        f.write(data)
+
+def read_slc(path):
+    """
+    Read slice positions from an ER-301 .slc file.
+
+    Returns:
+        List of integer sample positions.
+    """
+    with open(path, 'rb') as f:
+        data = f.read()
+
+    magic   = struct.unpack_from('<I', data, 0)[0]
+    version = struct.unpack_from('<I', data, 4)[0]
+    count   = struct.unpack_from('<I', data, 23)[0]
+
+    assert magic   == SLC_MAGIC,   f"Bad magic: 0x{magic:08X}"
+    assert version == SLC_VERSION, f"Unknown version: {version}"
+
+    positions = []
+    for i in range(count):
+        offset = 27 + i * 16
+        pos = struct.unpack_from('<I', data, offset)[0]
+        positions.append(pos)
+
+    return positions
 ```
-
-## Limitations
-
-- **Maximum slices:** 255 (uint8 slice count)
-- **Maximum sample position:** 16,776,960 (65535 × 256)
-  - At 48kHz: ~349 seconds / ~5.8 minutes
-  - At 96kHz: ~174 seconds / ~2.9 minutes
-- **Position resolution:** 256 samples
-  - At 48kHz: ~5.3ms granularity
-  - At 96kHz: ~2.7ms granularity
-
-## Notes
-
-- The alternating pattern byte (0x80/0x00) may encode additional information, but slices work without interpreting it
-- Files appear to sometimes be incomplete (missing final bytes) but still function
-- The ER-301 also supports reading WAV cue markers as an alternative to .slc files (firmware v0.6.00+), though this feature appears unreliable
-
-## Reverse Engineering Process
-
-This specification was discovered by:
-1. Creating sample chains manually on the ER-301
-2. Extracting the generated .slc files
-3. Analyzing known sample positions vs. binary data
-4. Testing hypothesis with generated files
-5. Verifying on actual hardware
-
-## Related Resources
-
-- [ER-301 Firmware](https://github.com/odevices/er-301)
-- [Orthogonal Devices Forum](https://forum.orthogonaldevices.com/)
 
 ---
 
-**Last Updated:** February 2026
-**Specification Version:** 1.0
+## Reverse Engineering History
+
+| Date          | Discovery                                                    |
+|---------------|--------------------------------------------------------------|
+| February 2026 | Initial format decoded: magic, version, label, entry layout  |
+| February 2026 | Positions confirmed as full sample values (not ÷256)         |
+| June 2026     | Byte 23 identified as uint32 LE slice count, not a constant  |
+
+The byte-23 correction was discovered when a merged 1024-slice chain loaded
+only 128 slices on hardware. Inspecting the header of a hardware-generated
+128-slice file showed `0x80 0x00 0x00 0x00` at offset 23, which had previously
+been misread as a one-byte constant `0x80`. Re-interpreting it as a uint32 LE
+field storing the count (128 = 0x80) resolved the issue and confirmed that the
+ER-301 uses this field to determine how many entries to read.
+
+---
+
+## Related Resources
+
+- [ER-301 Firmware source](https://github.com/odevices/er-301)
+- [Orthogonal Devices Forum](https://forum.orthogonaldevices.com/)
