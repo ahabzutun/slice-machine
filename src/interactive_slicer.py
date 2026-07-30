@@ -33,6 +33,14 @@ except ImportError:
     CDP_AVAILABLE = False
     print("⚠️  CDP processor not available (cdp_processor.py not found)")
 
+# GRID kit export (Percussa SSP) — same slices, extra .kit sidecar
+try:
+    from chain_to_grid_kit import slice_pairs_normalized, build_kit_xml, write_kit
+    GRID_KIT_AVAILABLE = True
+except ImportError:
+    GRID_KIT_AVAILABLE = False
+    print("⚠️  GRID kit export unavailable (chain_to_grid_kit.py not found)")
+
 # ============================================================================
 # SLICE LENGTH CONFIGURATION
 # ============================================================================
@@ -120,6 +128,26 @@ def generate_slc_file(wav_path, slices, total_samples):
         print(f"   ❌ ERROR: size mismatch!")
 
     return slc_path
+
+
+def generate_grid_kit_file(wav_path, chain_slices, total_samples):
+    """
+    Generate a GRID .kit file (Percussa SSP) alongside the chain, carrying the
+    SAME slices as the .slc. GRID stores slices as normalized [0,1] start/end
+    pairs; we derive them from the chain's absolute slice start positions.
+    """
+    kit_path = os.path.splitext(wav_path)[0] + '.kit'
+    positions = [s['start'] for s in chain_slices]
+    pairs = slice_pairs_normalized(positions, total_samples)
+
+    stem = os.path.splitext(os.path.basename(wav_path))[0]
+    root = build_kit_xml(stem, os.path.basename(wav_path), pairs, pad_index=0)
+    write_kit(root, kit_path)
+
+    print(f"\n🎛️  Generating GRID .kit file: {kit_path}")
+    print(f"   Slices: {len(pairs)} (normalized for Percussa SSP GRID)")
+    print(f"   ✓ Generated {kit_path}")
+    return kit_path
 
 
 # ============================================================================
@@ -686,7 +714,7 @@ def organize_slices_by_banks(audio_files_data, bank_sort='chronological'):
 
     return organized_slices
 
-def export_slices_custom(audio, slices, output_path, sr, generate_slc=True, reorganize=True, spectral_direction='low_to_high', processing_config=None):
+def export_slices_custom(audio, slices, output_path, sr, generate_slc=True, reorganize=True, spectral_direction='low_to_high', processing_config=None, generate_kit=True):
     """
     Export slices as a sample chain with built-in .slc generation.
     Audio processing (compress/normalize) is applied to the assembled chain,
@@ -738,6 +766,10 @@ def export_slices_custom(audio, slices, output_path, sr, generate_slc=True, reor
     # Generate .slc file
     if generate_slc:
         generate_slc_file(output_path, chain_slices, len(chain_audio))
+
+    # Generate GRID .kit file (same slices, for Percussa SSP)
+    if generate_kit and GRID_KIT_AVAILABLE:
+        generate_grid_kit_file(output_path, chain_slices, len(chain_audio))
 
     return output_path
 
@@ -1276,6 +1308,8 @@ def main():
                 print(f"Average: {sum(lengths)//len(lengths):,} samples ({sum(durations)/len(durations):.2f}ms)")
                 print(f"\n✨ Output: {output_path}")
                 print(f"✨ .slc file: {output_path.replace('.wav', '.slc')}")
+                if GRID_KIT_AVAILABLE:
+                    print(f"✨ .kit file: {output_path.replace('.wav', '.kit')} (GRID / Percussa SSP)")
                 if use_cdp_pre and use_cdp_post:
                     print(f"✨ CDP pre-processed: {os.path.basename(pre_thread_path)}")
                     print(f"✨ CDP post-processed: {os.path.basename(post_thread_path)}")
@@ -1406,6 +1440,8 @@ def main():
             print(f"Average: {sum(lengths)//len(lengths):,} samples ({sum(durations)/len(durations):.2f}ms)")
             print(f"\n✨ Output: {output_path}")
             print(f"✨ .slc file: {output_path.replace('.wav', '.slc')}")
+            if GRID_KIT_AVAILABLE:
+                print(f"✨ .kit file: {output_path.replace('.wav', '.kit')} (GRID / Percussa SSP)")
             if use_cdp_pre and use_cdp_post:
                 print(f"✨ CDP pre-processed: {os.path.basename(pre_thread_path)}")
                 print(f"✨ CDP post-processed: {os.path.basename(post_thread_path)}")
@@ -1553,6 +1589,8 @@ def main():
                 print(f"Average: {sum(lengths)//len(lengths):,} samples ({sum(durations)/len(durations):.2f}ms)")
                 print(f"\n✨ Output: {output_path}")
                 print(f"✨ .slc file: {output_path.replace('.wav', '.slc')}")
+                if GRID_KIT_AVAILABLE:
+                    print(f"✨ .kit file: {output_path.replace('.wav', '.kit')} (GRID / Percussa SSP)")
                 if use_cdp_pre and use_cdp_post:
                     print(f"✨ CDP pre-processed: {os.path.basename(pre_thread_path)}")
                     print(f"✨ CDP post-processed: {os.path.basename(post_thread_path)}")
