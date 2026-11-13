@@ -1,0 +1,2 @@
+-r requirements.txt
+PySide6-Essentials>=6.6                 # Qt core, GUI and widgets only (the desktop app)

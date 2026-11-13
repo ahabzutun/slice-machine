@@ -33,13 +33,11 @@ except ImportError:
     CDP_AVAILABLE = False
     print("⚠️  CDP processor not available (cdp_processor.py not found)")
 
-# GRID kit export (Percussa SSP) — same slices, extra .kit sidecar
-try:
-    from chain_to_grid_kit import slice_pairs_normalized, build_kit_xml, write_kit
-    GRID_KIT_AVAILABLE = True
-except ImportError:
-    GRID_KIT_AVAILABLE = False
-    print("⚠️  GRID kit export unavailable (chain_to_grid_kit.py not found)")
+# Slice/sidecar writers now live in the shared slc_io module — the single
+# source of truth for the ER-301 .slc and the Percussa SSP GRID .kit.
+# GRID_KIT_AVAILABLE is re-exported from there (True when chain_to_grid_kit.py
+# is importable).
+from slc_io import generate_slc_file, generate_grid_kit_file, GRID_KIT_AVAILABLE
 
 # ============================================================================
 # SLICE LENGTH CONFIGURATION
@@ -67,87 +65,12 @@ SLICE_MODES = {
 }
 
 # ============================================================================
-# BUILT-IN SLC GENERATOR
+# BUILT-IN SLC / GRID KIT GENERATORS
+# ----------------------------------------------------------------------------
+# generate_slc_file() and generate_grid_kit_file() were moved verbatim into
+# slc_io.py (imported above) so every tool shares one implementation. Their
+# signatures and output are unchanged.
 # ============================================================================
-
-def generate_slc_file(wav_path, slices, total_samples):
-    """
-    Generate .slc file for ER-301 using the ACTUAL format from hardware.
-
-    HEADER (27 bytes):
-    - Bytes  0-3:  Magic number 0xABCDDCBA (uint32 LE)
-    - Bytes  4-7:  Version 7 (uint32 LE)
-    - Bytes  8-13: Label "Slices"
-    - Bytes 14-22: Null padding
-    - Bytes 23-26: Slice count (uint32 LE)  ← was mistaken as a constant 0x80
-
-    ENTRIES (N × 16 bytes):
-    - Bytes 0-3:   Sample position (uint32 LE)
-    - Bytes 4-7:   Float 0.0
-    - Bytes 8-11:  Float 0.0
-    - Bytes 12-15: Float 1.0
-    """
-    slc_path = wav_path.replace('.wav', '.slc')
-    n = len(slices)
-
-    print(f"\n📄 Generating .slc file: {slc_path}")
-    print(f"   Slices: {n}")
-
-    with open(slc_path, 'wb') as f:
-        # Header
-        f.write(struct.pack('<I', 0xABCDDCBA))  # bytes  0-3:  magic
-        f.write(struct.pack('<I', 7))            # bytes  4-7:  version
-        f.write(b'Slices')                       # bytes  8-13: label
-        f.write(b'\x00' * 9)                     # bytes 14-22: padding
-        f.write(struct.pack('<I', n))            # bytes 23-26: slice count
-
-        # Entries
-        for i, s in enumerate(slices):
-            position = max(0, min(s['start'], 0xFFFFFFFF))
-            f.write(struct.pack('<I', position))
-            f.write(struct.pack('<f', 0.0))
-            f.write(struct.pack('<f', 0.0))
-            f.write(struct.pack('<f', 1.0))
-
-    expected = 27 + n * 16
-    actual   = os.path.getsize(slc_path)
-
-    print(f"✓ Generated {slc_path}")
-    print(f"   File size: {actual} bytes (expected {expected})")
-
-    if actual == expected:
-        print(f"   ✓ Size correct")
-        with open(slc_path, 'rb') as f:
-            f.seek(27)
-            first_pos = struct.unpack('<I', f.read(4))[0]
-            f.seek(27 + (n - 1) * 16)
-            last_pos  = struct.unpack('<I', f.read(4))[0]
-        print(f"   First slice: sample {first_pos:,}")
-        print(f"   Last slice:  sample {last_pos:,}")
-    else:
-        print(f"   ❌ ERROR: size mismatch!")
-
-    return slc_path
-
-
-def generate_grid_kit_file(wav_path, chain_slices, total_samples):
-    """
-    Generate a GRID .kit file (Percussa SSP) alongside the chain, carrying the
-    SAME slices as the .slc. GRID stores slices as normalized [0,1] start/end
-    pairs; we derive them from the chain's absolute slice start positions.
-    """
-    kit_path = os.path.splitext(wav_path)[0] + '.kit'
-    positions = [s['start'] for s in chain_slices]
-    pairs = slice_pairs_normalized(positions, total_samples)
-
-    stem = os.path.splitext(os.path.basename(wav_path))[0]
-    root = build_kit_xml(stem, os.path.basename(wav_path), pairs, pad_index=0)
-    write_kit(root, kit_path)
-
-    print(f"\n🎛️  Generating GRID .kit file: {kit_path}")
-    print(f"   Slices: {len(pairs)} (normalized for Percussa SSP GRID)")
-    print(f"   ✓ Generated {kit_path}")
-    return kit_path
 
 
 # ============================================================================
@@ -1327,85 +1250,71 @@ def main():
                         combined_audio, sample_rate, pre_thread_path, temp_dir
                     )
 
-            # Detect onsets
-            print(f"\n🔍 Detecting onsets using {slice_mode.upper()} mode...")
-            print(f"   Hop length: {slice_config['hop_length']} (sensitivity)")
+                # Detect onsets (non-bank combine only: bank mode exported above)
+                print(f"\n🔍 Detecting onsets using {slice_mode.upper()} mode...")
+                print(f"   Hop length: {slice_config['hop_length']} (sensitivity)")
 
-            onset_frames = librosa.onset.onset_detect(
-                y=combined_audio,
-                sr=sample_rate,
-                hop_length=slice_config['hop_length'],
-                units='samples',
-                backtrack=True
-            )
+                onset_frames = librosa.onset.onset_detect(
+                    y=combined_audio,
+                    sr=sample_rate,
+                    hop_length=slice_config['hop_length'],
+                    units='samples',
+                    backtrack=True
+                )
 
-            onset_frames = np.append(onset_frames, len(combined_audio))
+                onset_frames = np.append(onset_frames, len(combined_audio))
 
-            # Convert to slices
-            all_slices = []
-            for i in range(len(onset_frames) - 1):
-                start = onset_frames[i]
-                end = onset_frames[i + 1]
-                all_slices.append({
-                    'index': i,
-                    'start': start,
-                    'end': end,
-                    'length': end - start,
-                    'duration_ms': ((end - start) / sample_rate) * 1000
-                })
+                # Convert to slices
+                all_slices = []
+                for i in range(len(onset_frames) - 1):
+                    start = onset_frames[i]
+                    end = onset_frames[i + 1]
+                    all_slices.append({
+                        'index': i,
+                        'start': start,
+                        'end': end,
+                        'length': end - start,
+                        'duration_ms': ((end - start) / sample_rate) * 1000
+                    })
 
-            print(f"Found {len(all_slices)} slices from onset detection")
+                print(f"Found {len(all_slices)} slices from onset detection")
 
-            # Filter by minimum duration
-            all_slices = filter_slices_by_duration(
-                all_slices,
-                slice_config['min_duration_ms'],
-                sample_rate
-            )
+                # Filter by minimum duration
+                all_slices = filter_slices_by_duration(
+                    all_slices,
+                    slice_config['min_duration_ms'],
+                    sample_rate
+                )
 
-            # Reduce to target if we have too many
-            if len(all_slices) > target_slices:
-                print(f"\n✂️  Reducing {len(all_slices)} slices to {target_slices}...")
-                step = len(all_slices) / target_slices
-                indices = [int(i * step) for i in range(target_slices)]
-                slices = [all_slices[i] for i in indices]
-                for i, s in enumerate(slices):
-                    s['index'] = i
-                print(f"✓ Selected {len(slices)} slices")
-            else:
-                slices = all_slices
+                # Reduce to target if we have too many
+                if len(all_slices) > target_slices:
+                    print(f"\n✂️  Reducing {len(all_slices)} slices to {target_slices}...")
+                    step = len(all_slices) / target_slices
+                    indices = [int(i * step) for i in range(target_slices)]
+                    slices = [all_slices[i] for i in indices]
+                    for i, s in enumerate(slices):
+                        s['index'] = i
+                    print(f"✓ Selected {len(slices)} slices")
+                else:
+                    slices = all_slices
 
-            # Force exact target count
-            print(f"\n🎯 Forcing exactly {target_slices} slices...")
-            slices = force_target_slices(
-                slices,
-                target_slices,
-                len(combined_audio),
-                sample_rate,
-                min_duration_ms=slice_config['min_duration_ms']
-            )
+                # Force exact target count
+                print(f"\n🎯 Forcing exactly {target_slices} slices...")
+                slices = force_target_slices(
+                    slices,
+                    target_slices,
+                    len(combined_audio),
+                    sample_rate,
+                    min_duration_ms=slice_config['min_duration_ms']
+                )
 
-            # Remove silence AFTER subdivision
-            if remove_silence:
-                print(f"\n🔇 Final silence check after subdivision...")
-                slices = remove_silent_slices(combined_audio, slices, sample_rate, silence_threshold_db)
-
-                if len(slices) < target_slices:
-                    print(f"\n🎯 Re-subdividing to reach {target_slices} after silence removal...")
-                    slices = force_target_slices(
-                        slices,
-                        target_slices,
-                        len(combined_audio),
-                        sample_rate,
-                        min_duration_ms=slice_config['min_duration_ms']
-                    )
-
-                    print(f"\n🔇 Final cleanup pass...")
-                    pre_cleanup_count = len(slices)
+                # Remove silence AFTER subdivision
+                if remove_silence:
+                    print(f"\n🔇 Final silence check after subdivision...")
                     slices = remove_silent_slices(combined_audio, slices, sample_rate, silence_threshold_db)
 
                     if len(slices) < target_slices:
-                        print(f"\n🎯 Final subdivision to reach {target_slices}...")
+                        print(f"\n🎯 Re-subdividing to reach {target_slices} after silence removal...")
                         slices = force_target_slices(
                             slices,
                             target_slices,
@@ -1413,42 +1322,56 @@ def main():
                             sample_rate,
                             min_duration_ms=slice_config['min_duration_ms']
                         )
-                    elif len(slices) == pre_cleanup_count:
-                        print(f"✓ No additional silent slices found - we're done!")
 
-            # CDP Post-Processing
-            if use_cdp_post and post_thread_path:
-                combined_audio, slices = process_slices_with_cdp(
-                    combined_audio, slices, sample_rate, post_thread_path, temp_dir
-                )
+                        print(f"\n🔇 Final cleanup pass...")
+                        pre_cleanup_count = len(slices)
+                        slices = remove_silent_slices(combined_audio, slices, sample_rate, silence_threshold_db)
 
-            # Export
-            output_path = os.path.join(output_dir, f'{output_name}_chain.wav')
-            export_slices_custom(combined_audio, slices, output_path, sample_rate, generate_slc=True, reorganize=reorganize, spectral_direction=spectral_direction, processing_config=processing_config)
+                        if len(slices) < target_slices:
+                            print(f"\n🎯 Final subdivision to reach {target_slices}...")
+                            slices = force_target_slices(
+                                slices,
+                                target_slices,
+                                len(combined_audio),
+                                sample_rate,
+                                min_duration_ms=slice_config['min_duration_ms']
+                            )
+                        elif len(slices) == pre_cleanup_count:
+                            print(f"✓ No additional silent slices found - we're done!")
 
-            # Stats
-            lengths = [s['length'] for s in slices]
-            durations = [s['duration_ms'] for s in slices]
+                # CDP Post-Processing
+                if use_cdp_post and post_thread_path:
+                    combined_audio, slices = process_slices_with_cdp(
+                        combined_audio, slices, sample_rate, post_thread_path, temp_dir
+                    )
 
-            print("\n" + "=" * 70)
-            print("📊 RESULTS")
-            print("=" * 70)
-            print(f"Slice mode: {slice_mode.upper()} ({slice_config['min_duration_ms']}-{slice_config['target_duration_ms']}ms)")
-            print(f"Total slices: {len(slices)}")
-            print(f"Shortest: {min(lengths):,} samples ({min(durations):.2f}ms)")
-            print(f"Longest: {max(lengths):,} samples ({max(durations):.2f}ms)")
-            print(f"Average: {sum(lengths)//len(lengths):,} samples ({sum(durations)/len(durations):.2f}ms)")
-            print(f"\n✨ Output: {output_path}")
-            print(f"✨ .slc file: {output_path.replace('.wav', '.slc')}")
-            if GRID_KIT_AVAILABLE:
-                print(f"✨ .kit file: {output_path.replace('.wav', '.kit')} (GRID / Percussa SSP)")
-            if use_cdp_pre and use_cdp_post:
-                print(f"✨ CDP pre-processed: {os.path.basename(pre_thread_path)}")
-                print(f"✨ CDP post-processed: {os.path.basename(post_thread_path)}")
-            elif use_cdp_pre:
-                print(f"✨ CDP pre-processed: {os.path.basename(pre_thread_path)}")
-            elif use_cdp_post:
-                print(f"✨ CDP post-processed: {os.path.basename(post_thread_path)}")
+                # Export
+                output_path = os.path.join(output_dir, f'{output_name}_chain.wav')
+                export_slices_custom(combined_audio, slices, output_path, sample_rate, generate_slc=True, reorganize=reorganize, spectral_direction=spectral_direction, processing_config=processing_config)
+
+                # Stats
+                lengths = [s['length'] for s in slices]
+                durations = [s['duration_ms'] for s in slices]
+
+                print("\n" + "=" * 70)
+                print("📊 RESULTS")
+                print("=" * 70)
+                print(f"Slice mode: {slice_mode.upper()} ({slice_config['min_duration_ms']}-{slice_config['target_duration_ms']}ms)")
+                print(f"Total slices: {len(slices)}")
+                print(f"Shortest: {min(lengths):,} samples ({min(durations):.2f}ms)")
+                print(f"Longest: {max(lengths):,} samples ({max(durations):.2f}ms)")
+                print(f"Average: {sum(lengths)//len(lengths):,} samples ({sum(durations)/len(durations):.2f}ms)")
+                print(f"\n✨ Output: {output_path}")
+                print(f"✨ .slc file: {output_path.replace('.wav', '.slc')}")
+                if GRID_KIT_AVAILABLE:
+                    print(f"✨ .kit file: {output_path.replace('.wav', '.kit')} (GRID / Percussa SSP)")
+                if use_cdp_pre and use_cdp_post:
+                    print(f"✨ CDP pre-processed: {os.path.basename(pre_thread_path)}")
+                    print(f"✨ CDP post-processed: {os.path.basename(post_thread_path)}")
+                elif use_cdp_pre:
+                    print(f"✨ CDP pre-processed: {os.path.basename(pre_thread_path)}")
+                elif use_cdp_post:
+                    print(f"✨ CDP post-processed: {os.path.basename(post_thread_path)}")
 
         else:
             # Single file or batch mode

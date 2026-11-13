@@ -12,6 +12,8 @@ ENV/
 # Audio files in output (too large for git)
 output/*.wav
 output/*.slc
+output/*.kit
+output/*/
 
 # Keep the directory structure
 !output/.gitkeep

@@ -1,23 +1,17 @@
 # Slice Machine 🎵
 
-**Intelligent audio slicer for the Orthogonal Devices ER-301 — with cross-device export for the NerdSEQ and the Percussa SSP (GRID).**
+**Intelligent audio slicer for the Orthogonal Devices ER-301**
 
-Slice audio into organized sample chains with accompanying `.slc` metadata, then reuse the exact same slices across multiple Eurorack samplers.
+Automatically slice audio files into 128 organized slices with accompanying .slc metadata files for seamless ER-301 integration.
 
 ## Features
 
-✨ **Intelligent Onset Detection** — Finds transients in your audio
-🎯 **Forced Slice Count** — Exactly 128 (or any target) slices per chain
-🥁 **Slice Length Modes** — Percussive / Hybrid / Melodic presets tune slice length to your material
-🧠 **Similarity Grouping** — Reorganizes slices by spectral character (low→high or high→low)
-🏦 **Bank Mode** — Organize 8 files into 8×16 slice banks for MIDI controllers
-🔇 **Silence Removal** — Strips dead air after slicing
-🎛️ **CDP Integration** — Optional SoundThread pre/post processing
-📄 **Native `.slc` Support** — Generates ER-301-compatible slice metadata
-🎛️ **GRID `.kit` Export** — Same slices, ready for the Percussa SSP GRID plugin (produced automatically)
-🔗 **Chain Merger** — Combine pre-sliced chains into one
-✂️ **Chain Splitter** — Explode a chain back into individual slice files
-🎚️ **NerdSEQ Preparer** — Convert any audio into NerdSEQ-ready samples
+✨ **Intelligent Onset Detection** - Automatically finds transients in your audio
+🎯 **128-Slice Organization** - Perfectly sized for ER-301 sample chains
+🧠 **Similarity Grouping** - Groups similar slices together (16 groups of 8)
+📄 **Native .slc Support** - Generates ER-301-compatible slice metadata
+⚡ **Batch Processing** - Process multiple files at once
+🔗 **File Combining** - Merge multiple sources into one chain
 
 ## Quick Start
 
@@ -25,7 +19,7 @@ Slice audio into organized sample chains with accompanying `.slc` metadata, then
 
 ```bash
 # Clone the repository
-git clone https://github.com/ahabzutun/slice-machine.git
+git clone https://github.com/YOUR_USERNAME/slice-machine.git
 cd slice-machine
 
 # Create virtual environment
@@ -36,130 +30,128 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Place your audio in `input/` and run any of the tools below. Generated files land in `output/`.
+### Basic Usage
 
-## Tools
-
-All tools are interactive — run them and follow the prompts.
-
-### Slicer — `src/interactive_slicer.py`
-
-The main tool. Detects onsets, forces an exact slice count, optionally reorganizes,
-removes silence, and exports a sample chain.
-
+**Slice a single file:**
 ```bash
-venv/bin/python3 src/interactive_slicer.py
+python3 examples/slice_any_file.py "input/audio.wav" output_name
 ```
 
-Each export produces three files in one pass, sharing the same audio and the same cut points:
-
-- `<name>_chain.wav` — the concatenated slice chain
-- `<name>_chain.slc` — ER-301 slice metadata (absolute sample positions)
-- `<name>_chain.kit` — Percussa SSP GRID kit (normalized `[0,1]` slice pairs)
-
-Slice length modes let you match the cut length to the material:
-
-| Mode | Min | Target | Best for |
-|------|-----|--------|----------|
-| Percussive | 30 ms | 80 ms | Drums, percussion |
-| Hybrid | 100 ms | 300 ms | Mixed content |
-| Melodic | 200 ms | 600 ms | Melodic / harmonic phrases |
-
-### Chain Merger — `src/merge_chains.py`
-
-Combine multiple pre-sliced chains (`.wav` + `.slc` pairs) into one, preserving
-existing slice positions. Empty slots are filled with silence carrying evenly
-spaced placeholder markers.
-
+**Batch process multiple files:**
 ```bash
-venv/bin/python3 src/merge_chains.py
+python3 examples/batch_slice.py input/*.wav
 ```
 
-### Chain Splitter — `src/split_chain.py`
-
-The inverse of the merger: cut a chain at its slice markers and write every slice
-as its own file into `output/<chainname>/<chainname>_slice_001.wav`, etc.
-
+**Combine multiple files into one chain:**
 ```bash
-venv/bin/python3 src/split_chain.py
+python3 examples/combine_files.py "drums.wav" "bass.wav" "combined"
 ```
 
-### NerdSEQ Preparer — `src/prepare_nerdseq.py`
+## Desktop App
 
-Convert any input audio into samples ready for the XOR Electronics NerdSEQ. Choose
-format (WAV 16-bit, WAV 8-bit, or RAW 8-bit unsigned), channels (mono/stereo/keep),
-and sample rate. Reports the memory each sample uses against the NerdSEQ's ~190 kB
-budget. Output goes to `output/nerdseq/<subfolder>/`.
+All tools (and junglize) also come as one desktop app for **macOS** and **Linux** (Python + Qt / PySide6), with the
+same look as [Kontrolleur](https://github.com/ahabzutun/dualsense-eurorack-midi): same appearance
+presets, fonts and layout. A tab per tool, the settings in the side panel, and the audio on the stage:
+
+- **Slicer** — tick files (or drop them onto the window), set slices / length mode / order / silence /
+  processing / CDP, press **Preview** to see the cuts on the waveform, **Slice** to write
+  `.wav` + `.slc` + `.kit`. Click any slice to hear it (Space plays it again, Esc stops).
+  Bank mode draws the 8 banks.
+- **Junglize** — `src/junglize.py` as a form: pick any audio, set tempo, bars, mode, feel and cuts; **Roll** makes and plays
+  a break with a new seed, **Junglize** writes that exact break as `.wav` + `.slc` + `.kit`. The source's hits are shown
+  coloured by class (kick / snare / hat / other), the break on its bar grid, and the matching terminal command is shown too.
+- **Merge** — chains into slots (empty slots = silence with evenly spaced markers), drawn slot by slot.
+- **Split** — a chain into one `.wav` per slice, with the file names it will write.
+- **NerdSEQ** — the ~190 kB sample memory as a bar, filled live as you tick files or change the format.
+- **GRID kit** — the SSP's 8 pads; click the one that should hold the chain.
+
+Everything the tools print is in the **Log** drawer. Settings are kept between starts.
 
 ```bash
-venv/bin/python3 src/prepare_nerdseq.py
+./install-mac.sh      # macOS: venv + ~/Applications/Slice Machine.app
+./install-linux.sh    # Linux: venv + `slicemachine` launcher + menu entry
+# or straight from the checkout, with PySide6-Essentials installed:
+venv/bin/pip install -r requirements-app.txt && venv/bin/python3 slicemachine.py
 ```
 
-### Chain → GRID Kit — `src/chain_to_grid_kit.py`
+Listening to slices uses the system player (`afplay` on macOS; `pw-play`, `paplay` or `aplay` on Linux).
+On its first start the app takes over Kontrolleur's current look if Kontrolleur is installed (and
+**Look → Same as Kontrolleur** does it again later). `theme.py`, `widgets.py`, `stage.py` and `draw.py` in
+`slicemachine/` are copies of Kontrolleur's: `scripts/sync-look.sh` copies them over again after they change there.
 
-Generate a GRID `.kit` from an existing `.wav` + `.slc` pair (useful for chains made
-before kit export was built into the slicer). The chain `.wav` is untouched and
-shared; only the `.kit` sidecar is added. Output goes to `output/grid/`.
+For checking the UI without a screen: `QT_QPA_PLATFORM=offscreen SLICEMACHINE_SNAPSHOT=out.png`
+(+ `SLICEMACHINE_MODE`, `_TAB`, `_SIZE`, `KONTROLLEUR_PRESET`) renders the window to a PNG and quits;
+`SLICEMACHINE_INPUT` / `SLICEMACHINE_OUTPUT` set the default folders.
 
-```bash
-venv/bin/python3 src/chain_to_grid_kit.py
-```
+## How It Works
 
-## Using the Output
+1. **Load Audio** - Reads any audio format (WAV, MP3, FLAC, etc.)
+2. **Detect Onsets** - Finds transients using energy-based detection
+3. **Select 128 Slices** - Intelligently reduces to exactly 128 slices
+4. **Group by Similarity** - Organizes into 16 groups using spectral analysis
+5. **Export** - Creates WAV chain + .slc metadata file
 
-### ER-301 (Orthogonal Devices)
+### Grouping Methods
 
-1. Copy the `.wav` and `.slc` to your SD card.
-2. Load the WAV into the Sample Pool (Admin mode).
-3. Create a Variable Speed Player and assign the sample — slices appear automatically.
+- `similarity` (default) - Groups by spectral features
+- `duration` - Groups by slice length
+- `sequential` - Groups in order
 
-### Percussa SSP (GRID plugin)
+### Reduction Methods
 
-1. Copy the chain `.wav` to `/media/BOOT/samples/`.
-2. Copy the `.kit` to `/media/BOOT/samples/kits/`.
-3. Load the kit in GRID — the pad shows the chain with all its slices.
+- `even` (default) - Evenly distributed selection
+- `energy` - Keeps loudest slices
+- `duration` - Keeps longest slices
 
-GRID stores slices as normalized `[0,1]` start/end pairs inside a plain-XML `.kit`
-(root `<GRID_KIT>`, one `<PAD>` per pad). Slice Machine converts the ER-301's
-absolute sample positions with `normalized = position / total_samples`, each slice
-running from its marker to the next — the same boundary logic as the `.slc`.
+## Output Files
 
-### NerdSEQ (XOR Electronics)
+For each input, you get:
 
-Use `prepare_nerdseq.py` to produce WAV 8/16-bit or RAW 8-bit unsigned files, then
-copy them to the SD card's samples folder and load them into a sample slot. Sample
-memory is ~190 kB shared across all 12 slots, so keep individual samples short.
+- `output_name_chain.wav` - 128 slices concatenated
+- `output_name_chain.slc` - ER-301 slice metadata
+
+## Using with ER-301
+
+1. Copy both `.wav` and `.slc` files to your SD card
+2. Load the WAV into the Sample Pool (Admin mode)
+3. Load a unit that uses samples
+4. Assign the sample from the sample pool
+5. Slices appear automatically
 
 ## The .slc Format
 
-The ER-301's binary `.slc` format:
+I reverse-engineered the ER-301's binary .slc format:
 
-**Header (27 bytes):**
-- Bytes 0–3: Magic `0xABCDDCBA` (uint32 LE)
-- Bytes 4–7: Version `7` (uint32 LE)
-- Bytes 8–13: Label `"Slices"`
-- Bytes 14–22: Null padding
-- Bytes 23–26: Slice count (uint32 LE)
+**Header (40 bytes):**
+- Magic: `0xABCDDCBA`
+- Version: `7`
+- Marker: `"Slices"`
+- Slice count at byte 23
 
 **Per-Slice Entry (16 bytes):**
-- Bytes 0–3: Sample position (uint32 LE)
-- Bytes 4–7: Float `0.0`
-- Bytes 8–11: Float `0.0`
-- Bytes 12–15: Float `1.0`
+- Bytes 0-3: Pattern `00 80 3f XX`
+- Bytes 4-5: `uint16` = sample_position ÷ 256
+- Bytes 6-15: Zeros
+
+See [docs/SLC_FORMAT.md](docs/SLC_FORMAT.md) for full specification.
 
 ## Project Structure
 
 ```
 slice-machine/
 ├── src/
-│   ├── interactive_slicer.py   # Main slicer (onsets, forcing, banks, CDP, exports)
-│   ├── merge_chains.py         # Combine pre-sliced chains into one
-│   ├── split_chain.py          # Explode a chain into individual slice files
-│   ├── prepare_nerdseq.py      # Convert audio into NerdSEQ-ready samples
-│   ├── chain_to_grid_kit.py    # Generate a Percussa SSP GRID .kit from a chain
-│   └── cdp_processor.py        # CDP SoundThread integration
-├── input/                       # Place audio files here
-├── output/                      # Generated chains appear here
+│   ├── audio_slicer.py      # Core slicing engine
+│   ├── slc_generator.py     # .slc file writer
+│   └── utils.py             # Utilities
+├── examples/
+│   ├── slice_any_file.py    # Single file processor
+│   ├── batch_slice.py       # Batch processor
+│   └── combine_files.py     # Multi-file combiner
+├── slicemachine/             # Desktop app (PySide6) — start with slicemachine.py
+├── input/                    # Place audio files here
+├── output/                   # Generated chains appear here
+├── docs/
+│   └── SLC_FORMAT.md        # Format specification
 └── requirements.txt
 ```
 
@@ -177,18 +169,20 @@ Developed through reverse engineering the ER-301's binary format.
 
 Special thanks to:
 - Orthogonal Devices for the ER-301
-- XOR Electronics for the NerdSEQ
-- Andy Kuttor ([@kuttor](https://github.com/kuttor)) for the Percussa SSP GRID plugin
-- The Eurorack sampling community for inspiration
+- The ER-301 community for inspiration
 
 ## License
 
-MIT License — See LICENSE file for details
+MIT License - See LICENSE file for details
 
 ## Contributing
 
 Pull requests welcome! Found a bug? Open an issue.
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for version history.
+
 ---
 
-**Made with ❤️ for the Eurorack community**
+**Made with ❤️ for the ER-301 community**
